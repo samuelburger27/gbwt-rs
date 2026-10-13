@@ -132,6 +132,67 @@ pub struct GBZ {
 
 //-----------------------------------------------------------------------------
 
+/// Construction.
+impl GBZ {
+    /// Builds a [`GBZ`] structure from its parts.
+    ///
+    /// The GBWT index must be bidirectional, and the number of sequences in
+    /// the [`Sequences`] structure must match the node count implied by the
+    /// GBWT alphabet.
+    ///
+    /// # Arguments
+    ///
+    /// * `index`: A bidirectional GBWT index over the graph.
+    /// * `sequences`: The node sequences and optional node-to-segment translation.
+    /// * `tags`: The GBZ tags. The [`crate::SOURCE_KEY`] tag is added or overwritten.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the GBWT is not bidirectional, or if the number of
+    /// sequences does not match the GBWT alphabet.
+    pub fn from_parts(index: GBWT, sequences: Sequences, tags: Tags) -> Result<GBZ, String> {
+        if !index.is_bidirectional() {
+            return Err(String::from("GBZ: The GBWT index is not bidirectional"));
+        }
+        let potential_nodes = (index.alphabet_size() - index.first_node()) / 2;
+        if sequences.sequences() != potential_nodes {
+            return Err(String::from("GBZ: Mismatch between GBWT alphabet size and Sequences sequence count"));
+        }
+
+        let real_nodes = Self::compute_real_nodes(&index);
+
+        let mut tags = tags;
+        tags.insert(SOURCE_KEY, SOURCE_VALUE);
+
+        let mut header = Header::<GBZPayload>::default();
+        header.update();
+
+        Ok(GBZ {
+            header,
+            tags,
+            index,
+            sequences,
+            real_nodes,
+        })
+    }
+
+    // Returns a bitvector marking the original nodes present in the graph.
+    fn compute_real_nodes(index: &GBWT) -> BitVector {
+        let potential_nodes = (index.alphabet_size() - index.first_node()) / 2;
+        let mut real_nodes = RawVector::with_len(potential_nodes, false);
+        for record_id in index.as_ref().id_iter() {
+            if record_id == ENDMARKER {
+                continue;
+            }
+            let gbwt_node = index.record_to_node(record_id);
+            if support::node_orientation(gbwt_node) == Orientation::Forward {
+                real_nodes.set_bit(Self::gbwt_node_to_sequence(index, gbwt_node), true);
+            }
+        }
+        BitVector::from(real_nodes)
+    }
+}
+
 /// Utilities.
 impl GBZ {
     /// Returns a reference to the tags stored in the GBZ container.
@@ -714,16 +775,7 @@ impl Serialize for GBZ {
         }
 
         // Cache real nodes.
-        let mut real_nodes = RawVector::with_len(potential_nodes, false);
-        for record_id in index.as_ref().id_iter() {
-            if record_id == ENDMARKER {
-                continue;
-            }
-            let gbwt_node = index.record_to_node(record_id);
-            if support::node_orientation(gbwt_node) == Orientation::Forward {
-                real_nodes.set_bit(Self::gbwt_node_to_sequence(&index, gbwt_node), true);
-            }
-        }
+        let real_nodes = Self::compute_real_nodes(&index);
 
         // Update the header to the latest version after we have used the
         // serialized version for loading the correct data.
@@ -734,7 +786,7 @@ impl Serialize for GBZ {
             tags,
             index,
             sequences,
-            real_nodes: BitVector::from(real_nodes),
+            real_nodes,
         })
     }
 
