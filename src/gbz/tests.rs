@@ -725,4 +725,54 @@ fn build_gbwt_from_graph() {
     compare_gbwts(&gbwt, &truth, "build_gbwt_from_graph").unwrap();
 }
 
+#[test]
+fn build_translation_gbz() {
+    // Segments from translation.gfa, chopped to at most 2 bp.
+    let mut graph = GraphBuilder::new();
+    graph.translate_segment("s11", b"GAT", 2).unwrap();
+    graph.translate_segment("s12", b"T", 2).unwrap();
+    graph.translate_segment("s13", b"A", 2).unwrap();
+    graph.translate_segment("s14", b"CAG", 2).unwrap();
+    graph.translate_segment("unused", b"GAA", 2).unwrap();
+    graph.translate_segment("s15", b"A", 2).unwrap();
+    graph.translate_segment("s16", b"T", 2).unwrap();
+    graph.translate_segment("s17", b"TA", 2).unwrap();
+
+    // Paths in the same order as gfa2gbwt: P-line first, then W-lines.
+    let paths: Vec<(Vec<(&str, Orientation)>, FullPathName)> = vec![
+        (vec![("s11", Orientation::Forward), ("s12", Orientation::Forward), ("s14", Orientation::Forward), ("s15", Orientation::Forward), ("s17", Orientation::Forward)], FullPathName::generic("A")),
+        (vec![("s11", Orientation::Forward), ("s12", Orientation::Forward), ("s14", Orientation::Forward), ("s15", Orientation::Forward), ("s17", Orientation::Forward)], FullPathName::haplotype("sample", "A", 1, 0)),
+        (vec![("s11", Orientation::Forward), ("s13", Orientation::Forward), ("s14", Orientation::Forward), ("s16", Orientation::Forward), ("s17", Orientation::Forward)], FullPathName::haplotype("sample", "A", 2, 0)),
+    ];
+
+    let mut builder = GBWTBuilder::new(true, true, 1000);
+    let mut path = Vec::new();
+    for (steps, name) in &paths {
+        path.clear();
+        graph.expand_path(steps, &mut path).unwrap();
+        builder.insert(&path, Some(name.clone())).unwrap();
+    }
+    let gbwt = builder.build().unwrap();
+
+    let sequences = Sequences::from_graph(&gbwt, &graph).unwrap();
+    let gbz = GBZ::from_parts(gbwt, sequences, Tags::new()).unwrap();
+
+    let truth: GBZ = serialize::load_from(&support::get_test_data("translation.gbz")).unwrap();
+    assert_eq!(gbz.nodes(), truth.nodes(), "Invalid number of nodes");
+    assert_eq!(gbz.paths(), truth.paths(), "Invalid number of paths");
+    assert!(gbz.has_translation(), "The graph should contain a translation");
+    assert_eq!(gbz.metadata(), truth.metadata(), "Metadata does not match the reference");
+    for node_id in truth.node_iter() {
+        assert_eq!(gbz.sequence(node_id), truth.sequence(node_id), "Invalid sequence for node {}", node_id);
+    }
+    for path_id in 0..truth.paths() {
+        let built_path: Vec<(usize, Orientation)> = gbz.path(path_id, Orientation::Forward).unwrap().collect();
+        let truth_path: Vec<(usize, Orientation)> = truth.path(path_id, Orientation::Forward).unwrap().collect();
+        assert_eq!(built_path, truth_path, "Invalid path {}", path_id);
+    }
+
+    // The built GBZ must survive a serialization round trip.
+    serialize::test(&gbz, "built-translation-gbz", None, true);
+}
+
 //-----------------------------------------------------------------------------
